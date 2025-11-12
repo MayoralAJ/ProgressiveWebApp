@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciador de Filas PWA</title>
+    <!-- Carrega Tailwind CSS para um design responsivo e moderno -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Define a fonte Inter (padrão) -->
+    <style>
+        @import url('https://fonts.fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        /* Estilos globais para garantir que o layout da TV funcione em tela cheia */
+        #app { min-height: 100vh; }
+    </style>
+    <!-- Manifest para PWA (Será injetado via JavaScript) -->
+    <link rel="manifest" href="manifest.json">
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-100 transition-colors duration-300">
+
+    <div id="app" class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- O conteúdo será injetado aqui pelo JavaScript, dependendo da visualização (mobile, tv, admin) -->
+    </div>
+
+    <!-- Bibliotecas de terceiros -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+
+    <script type="module">
+        // ====================================================================
+        // CONFIGURAÇÕES GLOBAIS E ESTADO DA APLICAÇÃO
+        // ====================================================================
+
+        const APP_STATE = {
+            queue: [], // { id: 'uuid', number: 'A01', name: 'João Silva', enteredAt: Date }
+            currentNumber: null, // O número sendo atendido (e.g., 'A05')
+            lastCalled: [], // Lista dos últimos 5 chamados para a tela da TV
+            isRegistered: false,
+            user: { id: null, number: null, name: null, lastName: null, enteredAt: null },
+            averageWaitTime: '5:00', // Mock inicial em minutos:segundos
+            view: 'mobile' // 'mobile', 'tv', 'admin'
+        };
+
+        const STORAGE_KEY = 'queue-pwa-state';
+        const APP_ID = 'QueueManagerPWA'; // Usado para rotas e QR Code
+
+        // ====================================================================
+        // FUNÇÕES DE UTILIDADE E ARMAZENAMENTO
+        // ====================================================================
+
+        /**
+         * Persiste o estado principal no localStorage.
+         */
+        function saveState() {
+            try {
+                // Apenas persistimos o estado do usuário na visualização mobile
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(APP_STATE.user));
+            } catch (error) {
+                console.error("Erro ao salvar o estado no localStorage:", error);
+            }
+        }
+
+        /**
+         * Carrega o estado do usuário no início.
+         */
+        function loadUserState() {
+            try {
+                const storedUser = localStorage.getItem(STORAGE_KEY);
+                if (storedUser) {
+                    const user = JSON.parse(storedUser);
+                    // Garante que o estado carregado é um estado válido
+                    if (user.id && user.number) {
+                         // Apenas carrega o estado do usuário, o restante da fila é simulado pelo "servidor"
+                        APP_STATE.user = user;
+                        APP_STATE.isRegistered = true;
+                    }
+                }
+            } catch (error) {
+                console.error("Erro ao carregar o estado do localStorage:", error);
+            }
+        }
+
+        /**
+         * Simula a geração de um novo número sequencial (ex: A01, A02...).
+         * @param {number} index - O índice na fila.
+         * @returns {string} O número da fila formatado.
+         */
+        function generateQueueNumber(index) {
+            const num = index + 1;
+            return 'A' + (num < 10 ? '0' : '') + num;
+        }
+
+        /**
+         * Simula o cálculo do tempo médio de espera.
+         * No mundo real, isso usaria o histórico de atendimentos no banco de dados.
+         */
+        function calculateAverageWaitTime() {
+            if (APP_STATE.queue.length === 0) return '0:00';
+            
+            // Simulação: 5 minutos por pessoa, mas no máximo 30 minutos
+            const estimatedTimeSeconds = Math.min(APP_STATE.queue.length * 300, 1800);
+            
+            const minutes = Math.floor(estimatedTimeSeconds / 60);
+            const seconds = estimatedTimeSeconds % 60;
+            
+            APP_STATE.averageWaitTime = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        // ====================================================================
+        // PWA MANIFEST SETUP
+        // ====================================================================
+
+        /**
+         * Configura o Manifest.json embutido no head.
+         */
+        function setupPwaManifest() {
+            // Cria um manifest.json embutido (data URL)
+            const manifestContent = JSON.stringify({
+                name: "Queue Manager",
+                short_name: "Fila PWA",
+                start_url: "./",
+                display: "standalone",
+                background_color: "#f3f4f6",
+                theme_color: "#1f2937",
+                icons: [
+                    { src: "https://placehold.co/192x192/1f2937/ffffff?text=Fila", sizes: "192x192", type: "image/png" },
+                    { src: "https://placehold.co/512x512/1f2937/ffffff?text=Fila", sizes: "512x512", type: "image/png" }
+                ]
+            });
+
+            try {
+                const manifestBlob = new Blob([manifestContent], { type: 'application/json' });
+                const manifestUrl = URL.createObjectURL(manifestBlob);
+                document.querySelector('link[rel="manifest"]').setAttribute('href', manifestUrl);
+            } catch (error) {
+                 console.error("Erro ao configurar o Manifest PWA:", error);
+            }
+            // O Service Worker foi desativado para evitar o erro de protocolo que ocorria no ambiente de execução.
+            console.log("Service Worker desativado devido a restrições de ambiente.");
+        }
+
+
+        // ====================================================================
+        // LÓGICA DE FILA SIMULADA (SUBSTITUI O BACKEND REALTIME)
+        // ====================================================================
+
+        /**
+         * Simula a adição de um novo usuário à fila.
+         */
+        function addUserToQueue(name, lastName) {
+            if (APP_STATE.isRegistered) return;
+
+            const newId = crypto.randomUUID();
+            const newNumber = generateQueueNumber(APP_STATE.queue.length);
+            const userEntry = {
+                id: newId,
+                number: newNumber,
+                name: name,
+                lastName: lastName,
+                enteredAt: new Date().toISOString()
+            };
+
+            // Simula a escrita no Supabase (que enviaria para a fila)
+            APP_STATE.queue.push(userEntry);
+            
+            // Atualiza o estado local do usuário
+            APP_STATE.user = userEntry;
+            APP_STATE.isRegistered = true;
+            saveState(); // Persiste o novo usuário
+
+            // Simula a notificação para todos os clientes (atualização de estado)
+            calculateAverageWaitTime();
+            renderApp();
+        }
+
+        /**
+         * Simula o administrador chamando o próximo da fila.
+         */
+        function callNextInQueue() {
+            if (APP_STATE.queue.length === 0) return;
+
+            // Remove o primeiro da fila
+            const nextUser = APP_STATE.queue.shift();
+
+            // Atualiza o número atual de atendimento
+            APP_STATE.currentNumber = nextUser.number;
+
+            // Adiciona aos últimos chamados (para TV)
+            APP_STATE.lastCalled.unshift(nextUser.number);
+            if (APP_STATE.lastCalled.length > 5) {
+                APP_STATE.lastCalled.pop();
+            }
+
+            // Se o usuário atual foi chamado, dispara a notificação push simulada
+            if (APP_STATE.user.id === nextUser.id) {
+                // Remove o registro do usuário local
+                APP_STATE.isRegistered = false;
+                APP_STATE.user = { id: null, number: null, name: null, lastName: null, enteredAt: null };
+                localStorage.removeItem(STORAGE_KEY);
+                
+                // Simula o Push Notification
+                showPushNotification(nextUser.name);
+            }
+
+            calculateAverageWaitTime();
+            renderApp();
+        }
+        
+        /**
+         * Simula uma notificação push.
+         */
+        function showPushNotification(userName) {
+             const messageBox = document.getElementById('message-box');
+             if (messageBox) {
+                 messageBox.innerHTML = `
+                     <div class="bg-yellow-500 text-white p-4 rounded-lg shadow-xl mb-4 animate-pulse">
+                         <p class="font-bold text-lg">⚠️ Sua Vez, ${userName}!</p>
+                         <p>Seu número (${APP_STATE.currentNumber}) está sendo chamado no balcão de atendimento. Por favor, dirija-se ao local!</p>
+                     </div>
+                 `;
+                 setTimeout(() => messageBox.innerHTML = '', 10000); // Remove após 10s
+             }
+        }
+        
+        /**
+         * Reseta toda a fila e o estado.
+         */
+        function resetQueue() {
+            // Usando modal UI customizado em vez de 'confirm()'
+            showCustomModal("Confirmação de Reset", "Tem certeza que deseja RESETAR TODA a fila? Esta ação é irreversível.", () => {
+                APP_STATE.queue = [];
+                APP_STATE.currentNumber = null;
+                APP_STATE.lastCalled = [];
+                APP_STATE.isRegistered = false;
+                APP_STATE.user = { id: null, number: null, name: null, lastName: null, enteredAt: null };
+                APP_STATE.averageWaitTime = '5:00';
+                localStorage.removeItem(STORAGE_KEY);
+                renderApp();
+            });
+        }
+        
+        /**
+         * Limpa o registro do usuário (simula o usuário sendo atendido ou desistindo).
+         */
+        function clearUserRegistration() {
+            // Usando modal UI customizado em vez de 'confirm()'
+             showCustomModal("Sair da Fila", "Você tem certeza que deseja sair da fila?", () => {
+                // Simula a remoção da fila no "servidor"
+                const userIndex = APP_STATE.queue.findIndex(item => item.id === APP_STATE.user.id);
+                if (userIndex !== -1) {
+                    APP_STATE.queue.splice(userIndex, 1);
+                }
+
+                APP_STATE.isRegistered = false;
+                APP_STATE.user = { id: null, number: null, name: null, lastName: null, enteredAt: null };
+                localStorage.removeItem(STORAGE_KEY);
+                calculateAverageWaitTime();
+                renderApp();
+            });
+        }
+        
+        /**
+         * Exibe um modal de confirmação customizado (substitui window.confirm).
+         */
+        function showCustomModal(title, message, onConfirm) {
+            const modalHtml = `
+                <div id="custom-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-[100]">
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4">
+                        <h3 class="text-xl font-bold mb-4 text-gray-900 dark:text-white">${title}</h3>
+                        <p class="mb-6 text-gray-700 dark:text-gray-300">${message}</p>
+                        <div class="flex justify-end space-x-3">
+                            <button id="modal-cancel" class="px-4 py-2 text-gray-600 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition">Cancelar</button>
+                            <button id="modal-confirm" class="px-4 py-2 text-white bg-red-600 rounded-lg hover:bg-red-700 transition">Confirmar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+            const modal = document.getElementById('custom-modal');
+            
+            const closeModal = () => modal.remove();
+
+            document.getElementById('modal-cancel').onclick = closeModal;
+            document.getElementById('modal-confirm').onclick = () => {
+                closeModal();
+                onConfirm();
+            };
+        }
+
+
+        // Simulação de Realtime/Polling para manter as telas sincronizadas
+        // No mundo real, esta função seria substituída por onSnapshot do Supabase Realtime
+        setInterval(() => {
+            // Se estiver no admin, calcula tempo médio, senão não faz nada
+            if (APP_STATE.view !== 'admin') {
+                calculateAverageWaitTime();
+            }
+            renderApp(); // Redesenha a tela para refletir o estado global (simulando a atualização do servidor)
+        }, 5000); // Atualiza a cada 5 segundos (latência máxima atendida)
+
+        // ====================================================================
+        // RENDERING (RENDERIZAÇÃO)
+        // ====================================================================
+
+        /**
+         * Renderiza a interface mobile (usuário).
+         */
+        function renderMobileView() {
+            const userPosition = APP_STATE.queue.findIndex(item => item.id === APP_STATE.user.id) + 1;
+            const waitingBefore = userPosition > 0 ? userPosition - 1 : APP_STATE.queue.length; // Se não estiver registrado, mostra a fila total.
+
+            if (APP_STATE.isRegistered) {
+                // Tela de espera
+                return `
+                    <h1 class="text-3xl font-extrabold text-center mb-10 text-indigo-600 dark:text-indigo-400">Minha Posição na Fila</h1>
+                    
+                    <div id="message-box"></div>
+
+                    <div class="bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-2xl shadow-xl transition duration-500">
+                        <div class="text-center space-y-4">
+                            <p class="text-sm font-medium text-gray-500 dark:text-gray-400">Bem-vindo(a),</p>
+                            <p class="text-4xl font-black text-indigo-700 dark:text-indigo-300">${APP_STATE.user.name} ${APP_STATE.user.lastName}</p>
+                        </div>
+
+                        <div class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+                            <!-- Número Atual em Atendimento -->
+                            <div class="p-4 bg-indigo-50 dark:bg-gray-700 rounded-xl shadow-inner">
+                                <p class="text-sm font-semibold text-indigo-600 dark:text-indigo-400">Em Atendimento</p>
+                                <p class="text-4xl font-extrabold mt-1">${APP_STATE.currentNumber || '—'}</p>
+                            </div>
+
+                            <!-- Sua Posição na Fila -->
+                            <div class="p-4 bg-green-50 dark:bg-gray-700 rounded-xl shadow-inner">
+                                <p class="text-sm font-semibold text-green-600 dark:text-green-400">Pessoas na Frente</p>
+                                <p class="text-5xl font-extrabold mt-1 text-green-700 dark:text-green-300">${waitingBefore}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">Posição: ${userPosition}</p>
+                            </div>
+
+                            <!-- Tempo Médio Estimado -->
+                            <div class="p-4 bg-yellow-50 dark:bg-gray-700 rounded-xl shadow-inner">
+                                <p class="text-sm font-semibold text-yellow-600 dark:text-yellow-400">Tempo Estimado</p>
+                                <p class="text-4xl font-extrabold mt-1">${APP_STATE.averageWaitTime}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">Tempo por pessoa (médio)</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p class="text-center mt-6 text-sm text-gray-500 dark:text-gray-400">
+                        Seu número de chamada: <span class="font-bold text-lg text-indigo-500">${APP_STATE.user.number}</span>
+                    </p>
+                    <p class="text-center mt-12">
+                        <button onclick="APP.clearUserRegistration()" class="px-6 py-2 text-sm text-red-600 border border-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-gray-700 transition">Sair da Fila</button>
+                    </p>
+                `;
+            } else {
+                // Tela de cadastro/QR Code Scan
+                return `
+                    <h1 class="text-3xl font-extrabold text-center mb-10 text-indigo-600 dark:text-indigo-400">Entrar na Fila de Atendimento</h1>
+                    <div class="bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-2xl shadow-xl transition duration-500 max-w-md mx-auto">
+                        <form id="register-form" class="space-y-4">
+                            <input id="reg-name" type="text" placeholder="Seu Nome (Obrigatório)" required class="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-indigo-500 focus:border-indigo-500">
+                            <input id="reg-lastName" type="text" placeholder="Sobrenome (Obrigatório)" required class="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-indigo-500 focus:border-indigo-500">
+                            <button type="submit" class="w-full bg-indigo-600 text-white p-3 rounded-lg font-bold shadow-md hover:bg-indigo-700 transition duration-200">
+                                Pegar Meu Número na Fila
+                            </button>
+                        </form>
+                    </div>
+
+                    <p class="text-center mt-8 text-sm text-gray-500 dark:text-gray-400">
+                        Pessoas aguardando: <span class="font-bold text-indigo-500">${APP_STATE.queue.length}</span>. Tempo médio: ${APP_STATE.averageWaitTime}.
+                    </p>
+                `;
+            }
+        }
+        
+        /**
+         * Renderiza a tela de exibição (TV).
+         */
+        function renderTvView() {
+            return `
+                <div class="min-h-screen flex flex-col justify-center items-center p-4 bg-gray-900 text-white">
+                    <h1 class="text-6xl font-extrabold mb-10 text-green-400">ATENDIMENTO</h1>
+                    
+                    <div class="text-center mb-12">
+                        <p class="text-3xl font-medium text-gray-400 mb-2">Número Atual Chamado</p>
+                        <div class="bg-green-600 p-8 rounded-3xl shadow-2xl transform hover:scale-105 transition-transform duration-300">
+                            <p class="text-9xl font-black">${APP_STATE.currentNumber || 'Aguarde...'}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="w-full max-w-lg">
+                        <h2 class="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Últimos Chamados</h2>
+                        <ul class="space-y-3">
+                            ${APP_STATE.lastCalled.map((num, index) => `
+                                <li class="flex justify-between items-center p-3 rounded-xl bg-gray-800 shadow-lg">
+                                    <span class="text-xl font-medium text-gray-300">Chamado:</span>
+                                    <span class="text-3xl font-bold ${index === 0 ? 'text-yellow-400 animate-pulse' : 'text-gray-400'}">${num}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                    
+                    <p class="mt-8 text-sm text-gray-500">Tempo médio de espera: ${APP_STATE.averageWaitTime}</p>
+                </div>
+            `;
+        }
+        
+        /**
+         * Renderiza o painel de administração.
+         */
+        function renderAdminView() {
+            const queueList = APP_STATE.queue.map((item, index) => `
+                <li class="flex justify-between items-center p-4 bg-white dark:bg-gray-700 rounded-xl shadow-md">
+                    <span class="font-bold text-xl text-indigo-600 dark:text-indigo-300">${item.number}</span>
+                    <span class="flex-1 ml-4 truncate">${item.name} ${item.lastName}</span>
+                    <span class="text-sm text-gray-500 dark:text-gray-400">${Math.floor((new Date() - new Date(item.enteredAt)) / 60000)} min</span>
+                </li>
+            `).join('');
+
+            return `
+                <h1 class="text-3xl font-extrabold text-center mb-10 text-red-600 dark:text-red-400">Painel de Controle (Admin)</h1>
+                <div class="max-w-xl mx-auto space-y-6">
+                    <!-- Ações de Controle -->
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl space-y-4">
+                        <h2 class="text-xl font-semibold border-b pb-2 dark:border-gray-700">Ações</h2>
+                        <button onclick="APP.callNextInQueue()" class="w-full bg-green-500 text-white p-3 rounded-lg font-bold shadow-lg hover:bg-green-600 transition duration-200 text-lg">
+                            Chamar Próximo (${APP_STATE.queue.length > 0 ? APP_STATE.queue[0].number : 'Fila Vazia'})
+                        </button>
+                        <button onclick="APP.resetQueue()" class="w-full bg-red-500 text-white p-3 rounded-lg font-bold shadow-lg hover:bg-red-600 transition duration-200 text-sm">
+                            RESETAR FILA COMPLETA
+                        </button>
+                    </div>
+
+                    <!-- Informações da Fila -->
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl">
+                        <h2 class="text-xl font-semibold border-b pb-2 dark:border-gray-700 mb-4">Fila Atual (${APP_STATE.queue.length} Pessoas)</h2>
+                        <ul class="space-y-3">
+                            ${queueList.length > 0 ? queueList : '<li class="text-center text-gray-500 dark:text-gray-400">A fila está vazia.</li>'}
+                        </ul>
+                    </div>
+
+                    <!-- Geração de QR Code -->
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl text-center">
+                        <h2 class="text-xl font-semibold mb-4">QR Code de Entrada (Escanear)</h2>
+                        <div id="qrcode-container" class="p-4 bg-gray-100 dark:bg-gray-700 inline-block rounded-lg shadow-inner">
+                            <!-- QR Code será renderizado aqui -->
+                        </div>
+                        <p class="mt-4 text-sm text-gray-500 dark:text-gray-400">URL para o QR Code: <span class="font-mono text-indigo-500">${window.location.href}</span></p>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Renderiza a interface apropriada baseada no estado 'view'.
+         */
+        function renderApp() {
+            const appDiv = document.getElementById('app');
+            let htmlContent = '';
+
+            switch (APP_STATE.view) {
+                case 'tv':
+                    appDiv.className = 'w-full h-screen'; // TV deve ocupar a tela toda
+                    htmlContent = renderTvView();
+                    break;
+                case 'admin':
+                    appDiv.className = 'max-w-7xl mx-auto p-4 sm:p-6 lg:p-8';
+                    htmlContent = renderAdminView();
+                    break;
+                case 'mobile':
+                default:
+                    appDiv.className = 'max-w-7xl mx-auto p-4 sm:p-6 lg:p-8';
+                    htmlContent = renderMobileView();
+                    break;
+            }
+
+            appDiv.innerHTML = htmlContent;
+            
+            // Adiciona listener de formulário após o render
+            if (!APP_STATE.isRegistered && APP_STATE.view === 'mobile') {
+                document.getElementById('register-form')?.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const name = document.getElementById('reg-name').value.trim();
+                    const lastName = document.getElementById('reg-lastName').value.trim();
+                    if (name && lastName) {
+                        addUserToQueue(name, lastName);
+                    } else {
+                        // Substituindo alert por mensagem na tela
+                        const form = document.getElementById('register-form');
+                        if(form && !form.querySelector('#error-message')){
+                            form.insertAdjacentHTML('beforebegin', '<p id="error-message" class="text-red-500 text-center mb-3">Por favor, preencha nome e sobrenome.</p>');
+                            setTimeout(() => form.querySelector('#error-message')?.remove(), 3000);
+                        }
+                    }
+                });
+            }
+
+            // Renderiza QR Code no painel Admin
+            if (APP_STATE.view === 'admin') {
+                const qrContainer = document.getElementById('qrcode-container');
+                if (qrContainer) {
+                    qrContainer.innerHTML = ''; // Limpa antes de renderizar
+                    QRCode.toCanvas(qrContainer, window.location.href, { width: 256, color: { dark: '#1f2937', light: '#ffffff' } }, function (error) {
+                        if (error) console.error(error);
+                    });
+                }
+            }
+            
+            // Re-expõe o objeto APP após a renderização
+            window.APP = {
+                ...window.APP,
+                callNextInQueue,
+                resetQueue,
+                clearUserRegistration,
+                setView: setView,
+            };
+        }
+        
+        /**
+         * Muda a visualização principal (Mobile, TV, Admin).
+         * @param {string} newView - 'mobile', 'tv', ou 'admin'.
+         */
+        function setView(newView) {
+            APP_STATE.view = newView;
+            renderApp();
+        }
+
+        // ====================================================================
+        // INICIALIZAÇÃO
+        // ====================================================================
+
+        window.onload = () => {
+            // 1. Configura o Manifest PWA (substitui o registro do Service Worker que estava falhando)
+            setupPwaManifest();
+            
+            // 2. Carrega o estado do usuário do localStorage
+            loadUserState();
+            
+            // 3. Inicializa o estado simulado do servidor (a fila)
+            // Mock de dados iniciais para a simulação
+            if (APP_STATE.queue.length === 0) {
+                 addUserToQueue('José', 'Almeida');
+                 APP_STATE.isRegistered = false; // "Libera" o slot de registro para simular que não é esse usuário
+                 APP_STATE.user = { id: null, number: null, name: null, lastName: null, enteredAt: null };
+                 
+                 addUserToQueue('Maria', 'Souza');
+                 APP_STATE.isRegistered = false; 
+                 APP_STATE.user = { id: null, number: null, name: null, lastName: null, enteredAt: null };
+            }
+            
+            // 4. Determina a visualização inicial com base na URL (simula rotas)
+            const urlParams = new URLSearchParams(window.location.search);
+            const viewParam = urlParams.get('view');
+            
+            if (viewParam === 'tv') {
+                APP_STATE.view = 'tv';
+            } else if (viewParam === 'admin') {
+                APP_STATE.view = 'admin';
+            } else {
+                APP_STATE.view = 'mobile';
+            }
+            
+            // 5. Renderiza a interface
+            renderApp();
+            
+            // 6. Expõe funções públicas para os botões HTML
+            window.APP = {
+                callNextInQueue,
+                resetQueue,
+                clearUserRegistration,
+                setView,
+            };
+            
+            // Aviso de rota
+            console.log(`Visualização atual: ${APP_STATE.view}. Adicione ?view=tv ou ?view=admin à URL para mudar a tela.`);
+        };
+        
+        // Simulações de Rotas (Permite ao usuário testar as 3 interfaces)
+        document.body.insertAdjacentHTML('afterbegin', `
+            <div class="fixed top-2 right-2 p-2 bg-gray-800/80 rounded-lg shadow-lg z-50 flex space-x-2 text-white text-xs">
+                <button onclick="APP.setView('mobile')" class="px-2 py-1 rounded hover:bg-indigo-600 transition">Mobile</button>
+                <button onclick="APP.setView('tv')" class="px-2 py-1 rounded hover:bg-indigo-600 transition">TV</button>
+                <button onclick="APP.setView('admin')" class="px-2 py-1 rounded hover:bg-indigo-600 transition">Admin</button>
+            </div>
+        `);
+        // Adicionando um espaço reservado para o modal customizado (substitui 'confirm' e 'alert')
+        document.body.insertAdjacentHTML('beforeend', '<div id="custom-modal-container"></div>');
+    </script>
+</body>
+</html>
